@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canary</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    /* Gruvbox Dark */
+    --bg:        #1d2021;
+    --surface:   #282828;
+    --border:    #3c3836;
+    --border2:   #504945;
+    --text:      #ebdbb2;
+    --muted:     #7c6f64;
+    --accent:    #83a598;   /* gruvbox aqua */
+    --accent2:   #b8bb26;   /* gruvbox green */
+    --warn:      #fabd2f;   /* gruvbox yellow */
+    --danger:    #fb4934;   /* gruvbox red */
+    --cpu-color: #83a598;   /* aqua */
+    --mem-color: #b8bb26;   /* green */
+    --temp-color:#fe8019;   /* gruvbox orange */
+    --fan-color: #d3869b;   /* gruvbox purple */
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    min-height: 100vh;
+    padding: 0;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.06) 2px,
+      rgba(0,0,0,0.06) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-mark {
+    width: 28px; height: 28px;
+    border: 1.5px solid var(--accent);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+    padding: 4px;
+  }
+
+  .logo-mark span {
+    background: var(--accent);
+    display: block;
+    animation: pulse-block 2s ease-in-out infinite;
+  }
+  .logo-mark span:nth-child(2) { animation-delay: 0.3s; background: var(--mem-color); }
+  .logo-mark span:nth-child(3) { animation-delay: 0.6s; background: var(--temp-color); }
+  .logo-mark span:nth-child(4) { animation-delay: 0.9s; background: var(--fan-color); }
+
+  @keyframes pulse-block {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .logo-text {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    color: #fff;
+  }
+  .logo-text span { color: var(--accent); }
+
+  .header-meta {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+  }
+
+  .meta-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .meta-label { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .meta-value { color: var(--text); font-size: 12px; }
+
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent2);
+    box-shadow: 0 0 6px var(--accent2);
+    animation: blink 1.5s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* Main layout */
+  main {
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 12px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+  }
+
+  .card.cpu::after    { background: var(--cpu-color); }
+  .card.mem::after    { background: var(--mem-color); }
+  .card.temp::after   { background: var(--temp-color); }
+  .card.fans::after   { background: var(--fan-color); }
+  .card.disk::after   { background: var(--warn); }
+  .card.net::after    { background: var(--accent); }
+  .card.sysinfo::after{ background: var(--muted); }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 14px;
+  }
+
+  .card-title {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .card-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border: 1px solid var(--border2);
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+
+  /* Big number stat */
+  .stat-big {
+    font-size: 42px;
+    font-weight: 300;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+
+  .stat-big .unit {
+    font-size: 18px;
+    color: var(--muted);
+    margin-left: 2px;
+  }
+
+  .stat-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  /* Bar gauge */
+  .gauge {
+    width: 100%;
+    height: 4px;
+    background: var(--border2);
+    margin-top: 8px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .gauge-fill {
+    height: 100%;
+    transition: width 0.6s ease;
+    position: relative;
+  }
+
+  .gauge-fill::after {
+    content: '';
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    width: 20px;
+    background: linear-gradient(to right, transparent, rgba(255,255,255,0.4));
+  }
+
+  .gauge.cpu .gauge-fill    { background: var(--cpu-color); }
+  .gauge.mem .gauge-fill    { background: var(--mem-color); }
+  .gauge.disk .gauge-fill   { background: var(--warn); }
+
+  /* Chart containers */
+  .chart-wrap {
+    position: relative;
+    width: 100%;
+  }
+
+  /* Grid spans */
+  .span-4  { grid-column: span 4; }
+  .span-6  { grid-column: span 6; }
+  .span-3  { grid-column: span 3; }
+  .span-12 { grid-column: span 12; }
+  .span-8  { grid-column: span 8; }
+
+  @media (max-width: 1100px) {
+    .span-4, .span-3 { grid-column: span 6; }
+    .span-8 { grid-column: span 12; }
+  }
+  @media (max-width: 720px) {
+    .span-4, .span-3, .span-6, .span-8 { grid-column: span 12; }
+  }
+
+  /* Stat rows */
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row .key { color: var(--muted); }
+  .stat-row .val { color: var(--text); text-align: right; }
+
+  /* Memory breakdown */
+  .mem-bar-stack {
+    display: flex;
+    height: 6px;
+    margin: 10px 0 8px;
+    gap: 1px;
+    overflow: hidden;
+    border-radius: 0;
+  }
+  .mem-seg { height: 100%; transition: flex 0.6s ease; }
+
+  .mem-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .mem-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .mem-legend-dot { width: 8px; height: 8px; border-radius: 0; flex-shrink: 0; }
+
+  /* Sensor grid */
+  .sensor-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .sensor-item {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+  }
+
+  .sensor-name {
+    font-size: 9px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sensor-val {
+    font-size: 20px;
+    font-weight: 300;
+    color: var(--temp-color);
+  }
+
+  .sensor-val .sunit { font-size: 11px; color: var(--muted); }
+
+  /* Fan items */
+  .fan-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .fan-item:last-child { border-bottom: none; }
+
+  .fan-icon {
+    font-size: 20px;
+    animation: spin 2s linear infinite;
+    display: inline-block;
+    transform-origin: center;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .fan-info { flex: 1; }
+  .fan-label { font-size: 10px; color: var(--muted); margin-bottom: 2px; text-transform: uppercase; }
+  .fan-rpm   { font-size: 22px; font-weight: 300; color: var(--fan-color); }
+
+  /* Notice box */
+  .notice {
+    background: rgba(255,184,0,0.06);
+    border: 1px solid rgba(255,184,0,0.2);
+    padding: 10px 12px;
+    font-size: 11px;
+    color: var(--warn);
+    line-height: 1.5;
+    margin-top: 8px;
+  }
+
+  /* Network card */
+  .net-ifaces { margin-top: 8px; }
+  .net-iface {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .net-iface:last-child { border-bottom: none; }
+  .net-iface-name { font-size: 10px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.1em; }
+  .net-speeds { display: flex; gap: 20px; }
+  .net-speed-item { }
+  .net-speed-label { font-size: 9px; color: var(--muted); }
+  .net-speed-val { font-size: 16px; font-weight: 400; }
+  .net-speed-val.in  { color: var(--accent2); }
+  .net-speed-val.out { color: var(--accent); }
+
+  #thermal-note { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-mark">
+      <span></span><span></span><span></span><span></span>
+    </div>
+    <div class="logo-text">CAN<span>ARY</span></div>
+  </div>
+  <div class="header-meta">
+    <div class="meta-item">
+      <span class="meta-label">Host</span>
+      <span class="meta-value" id="hdr-hostname">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">OS</span>
+      <span class="meta-value" id="hdr-os">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">Uptime</span>
+      <span class="meta-value" id="hdr-uptime">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">Load</span>
+      <span class="meta-value" id="hdr-load">—</span>
+    </div>
+    <div id="status-dot" title="Live"></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- CPU Chart -->
+  <div class="card cpu span-8">
+    <div class="card-header">
+      <span class="card-title">CPU Usage</span>
+      <span class="card-badge" id="cpu-brand">—</span>
+    </div>
+    <div style="display:flex; gap:32px; align-items:flex-end; margin-bottom:12px;">
+      <div>
+        <div class="stat-big" id="cpu-total" style="color:var(--cpu-color)">—<span class="unit">%</span></div>
+        <div class="stat-sub" id="cpu-sub">user — / sys —</div>
+      </div>
+      <div style="flex:1;">
+        <div class="stat-row"><span class="key">Logical cores</span><span class="val" id="cpu-logical">—</span></div>
+        <div class="stat-row"><span class="key">Physical cores</span><span class="val" id="cpu-physical">—</span></div>
+        <div class="stat-row"><span class="key">Idle</span><span class="val" id="cpu-idle">—</span></div>
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:120px;">
+      <canvas id="cpu-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Memory stat card -->
+  <div class="card mem span-4">
+    <div class="card-header">
+      <span class="card-title">Memory</span>
+      <span class="card-badge" id="mem-total-badge">—</span>
+    </div>
+    <div class="stat-big" id="mem-used" style="color:var(--mem-color)">—<span class="unit">GB</span></div>
+    <div class="stat-sub">of <span id="mem-total-sub">—</span> GB used</div>
+    <div class="gauge mem">
+      <div class="gauge-fill" id="mem-gauge" style="width:0%"></div>
+    </div>
+
+    <div class="mem-bar-stack" id="mem-stack">
+      <div class="mem-seg" id="ms-wired"     style="background:#d3869b; flex:0"></div>
+      <div class="mem-seg" id="ms-active"    style="background:var(--mem-color); flex:0"></div>
+      <div class="mem-seg" id="ms-inactive"  style="background:#689d6a; flex:0"></div>
+      <div class="mem-seg" id="ms-compressed"style="background:#458588; flex:0"></div>
+      <div class="mem-seg"                   style="background:var(--border2); flex:1"></div>
+    </div>
+    <div class="mem-legend">
+      <div class="mem-legend-item"><div class="mem-legend-dot" style="background:#d3869b"></div>Wired</div>
+      <div class="mem-legend-item"><div class="mem-legend-dot" style="background:var(--mem-color)"></div>Active</div>
+      <div class="mem-legend-item"><div class="mem-legend-dot" style="background:#689d6a"></div>Inactive</div>
+      <div class="mem-legend-item"><div class="mem-legend-dot" style="background:#458588"></div>Compressed</div>
+    </div>
+
+    <div style="margin-top:10px;">
+      <div class="stat-row"><span class="key">Pressure</span><span class="val" id="mem-pressure">—</span></div>
+      <div class="stat-row"><span class="key">Swap used</span><span class="val" id="mem-swap">—</span></div>
+      <div class="stat-row"><span class="key">Wired</span><span class="val" id="mem-wired">—</span></div>
+    </div>
+  </div>
+
+  <!-- Memory chart -->
+  <div class="card mem span-6">
+    <div class="card-header">
+      <span class="card-title">Memory History</span>
+    </div>
+    <div class="chart-wrap" style="height:140px;">
+      <canvas id="mem-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Disk -->
+  <div class="card disk span-3">
+    <div class="card-header">
+      <span class="card-title">Disk — /</span>
+    </div>
+    <div class="stat-big" id="disk-used" style="color:var(--warn)">—<span class="unit">%</span></div>
+    <div class="stat-sub" id="disk-sub">— used of —</div>
+    <div class="gauge disk">
+      <div class="gauge-fill" id="disk-gauge" style="width:0%"></div>
+    </div>
+    <div style="margin-top:14px;">
+      <div class="stat-row"><span class="key">Size</span><span class="val" id="disk-size">—</span></div>
+      <div class="stat-row"><span class="key">Used</span><span class="val" id="disk-used-val">—</span></div>
+      <div class="stat-row"><span class="key">Available</span><span class="val" id="disk-avail">—</span></div>
+    </div>
+  </div>
+
+  <!-- Network -->
+  <div class="card net span-3">
+    <div class="card-header">
+      <span class="card-title">Network</span>
+    </div>
+    <div class="net-ifaces" id="net-ifaces">
+      <div style="color:var(--muted);font-size:11px;">Awaiting data…</div>
+    </div>
+  </div>
+
+  <!-- Temperature sensors -->
+  <div class="card temp span-6">
+    <div class="card-header">
+      <span class="card-title">Thermal Sensors</span>
+      <span class="card-badge" id="temp-source">—</span>
+    </div>
+    <div id="thermal-note" class="notice"></div>
+    <div class="sensor-grid" id="sensor-grid">
+      <div style="color:var(--muted);font-size:11px;grid-column:span 2;">Awaiting data…</div>
+    </div>
+  </div>
+
+  <!-- Temp history chart -->
+  <div class="card temp span-3" id="temp-chart-card" style="display:none;">
+    <div class="card-header">
+      <span class="card-title">Temperature History</span>
+    </div>
+    <div class="chart-wrap" style="height:140px;">
+      <canvas id="temp-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Fans -->
+  <div class="card fans span-3">
+    <div class="card-header">
+      <span class="card-title">Fans</span>
+    </div>
+    <div id="fan-list">
+      <div style="color:var(--muted);font-size:11px;">Awaiting data…</div>
+    </div>
+  </div>
+
+  <!-- System info -->
+  <div class="card sysinfo span-12">
+    <div class="card-header">
+      <span class="card-title">System Information</span>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:0;">
+      <div class="stat-row" style="flex:1; min-width:200px;"><span class="key">CPU Model</span><span class="val" id="si-cpu">—</span></div>
+      <div class="stat-row" style="flex:1; min-width:200px;"><span class="key">macOS</span><span class="val" id="si-os">—</span></div>
+      <div class="stat-row" style="flex:1; min-width:200px;"><span class="key">Hostname</span><span class="val" id="si-host">—</span></div>
+      <div class="stat-row" style="flex:1; min-width:200px;"><span class="key">Load avg (1/5/15)</span><span class="val" id="si-load">—</span></div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── Chart setup ───────────────────────────────────────────────────────────────
+
+const MAX_POINTS = 60;
+const labels = Array(MAX_POINTS).fill('');
+
+function initChart(id, datasets, yMax = 100) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [...labels], datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: datasets.length > 1, labels: {
+          color: '#4a5a6a', font: { family: "'IBM Plex Mono'", size: 10 },
+          boxWidth: 10, padding: 12
+        }},
+        tooltip: { enabled: true, backgroundColor: '#111418', borderColor: '#1e2530',
+          borderWidth: 1, titleColor: '#c8d4e0', bodyColor: '#4a5a6a',
+          titleFont: { family: "'IBM Plex Mono'", size: 10 },
+          bodyFont: { family: "'IBM Plex Mono'", size: 10 }
+        }
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          min: 0, max: yMax,
+          grid: { color: '#1e2530', drawBorder: false },
+          ticks: { color: '#4a5a6a', font: { family: "'IBM Plex Mono'", size: 9 }, maxTicksLimit: 5 },
+          border: { display: false }
+        }
+      }
+    }
+  });
+}
+
+function makeDataset(label, color, fill = true) {
+  return {
+    label,
+    data: Array(MAX_POINTS).fill(null),
+    borderColor: color,
+    backgroundColor: fill ? color + '18' : 'transparent',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0.4,
+    fill
+  };
+}
+
+const cpuChart = initChart('cpu-chart', [
+  makeDataset('Total', '#83a598'),
+  makeDataset('User',  '#458588', false),
+  makeDataset('Sys',   '#d3869b', false),
+], 100);
+
+const memChart = initChart('mem-chart', [
+  makeDataset('Used GB', '#b8bb26'),
+], 0); // dynamic max
+
+let tempChart = null;
+let tempChartSensors = [];
+
+function push(dataset, val) {
+  dataset.shift();
+  dataset.push(val);
+}
+
+// ── Fetch & update ─────────────────────────────────────────────────────────
+
+function fmt1(n) { return typeof n === 'number' ? n.toFixed(1) : '—'; }
+function fmtPct(n) { return typeof n === 'number' ? n.toFixed(1) + '%' : '—'; }
+function fmtGB(n)  { return typeof n === 'number' ? n.toFixed(2) + ' GB' : '—'; }
+
+async function fetchMetrics() {
+  let d;
+  try {
+    const r = await fetch('/api/metrics');
+    d = await r.json();
+  } catch(e) {
+    document.getElementById('status-dot').style.background = 'var(--danger)';
+    return;
+  }
+  document.getElementById('status-dot').style.background = 'var(--accent2)';
+
+  // ── System info ──
+  const sys = d.system || {};
+  document.getElementById('hdr-hostname').textContent = sys.hostname || '—';
+  document.getElementById('hdr-os').textContent       = sys.macos    || '—';
+  document.getElementById('hdr-uptime').textContent   = sys.uptime   || '—';
+  document.getElementById('hdr-load').textContent     =
+    [sys.load_1, sys.load_5, sys.load_15].map(x => fmt1(x)).join(' / ');
+  document.getElementById('si-os').textContent   = sys.macos    || '—';
+  document.getElementById('si-host').textContent = sys.hostname || '—';
+  document.getElementById('si-load').textContent =
+    [sys.load_1, sys.load_5, sys.load_15].map(x => fmt1(x)).join(' / ');
+
+  // ── CPU ──
+  const cpu = d.cpu || {};
+  document.getElementById('cpu-brand').textContent    = cpu.brand || '—';
+  document.getElementById('si-cpu').textContent       = cpu.brand || '—';
+  document.getElementById('cpu-total').innerHTML      = `${fmt1(cpu.total)}<span class="unit">%</span>`;
+  document.getElementById('cpu-sub').textContent      = `user ${fmt1(cpu.user)}% / sys ${fmt1(cpu.sys)}%`;
+  document.getElementById('cpu-idle').textContent     = fmtPct(cpu.idle);
+  document.getElementById('cpu-logical').textContent  = cpu.cores_logical  || '—';
+  document.getElementById('cpu-physical').textContent = cpu.cores_physical || '—';
+
+  push(cpuChart.data.datasets[0].data, cpu.total);
+  push(cpuChart.data.datasets[1].data, cpu.user);
+  push(cpuChart.data.datasets[2].data, cpu.sys);
+  cpuChart.update();
+
+  // ── Memory ──
+  const mem = d.memory || {};
+  const totalGB = mem.total_gb || 0;
+  document.getElementById('mem-total-badge').textContent = fmtGB(totalGB);
+  document.getElementById('mem-used').innerHTML = `${fmt1(mem.used_gb)}<span class="unit">GB</span>`;
+  document.getElementById('mem-total-sub').textContent   = fmt1(totalGB);
+  document.getElementById('mem-gauge').style.width       = (mem.used_pct || 0) + '%';
+  document.getElementById('mem-pressure').textContent    = mem.pressure_pct != null ? fmtPct(mem.pressure_pct) : 'N/A';
+  document.getElementById('mem-swap').textContent        = mem.swap_used_mb != null ? mem.swap_used_mb.toFixed(0) + ' MB' : '—';
+  document.getElementById('mem-wired').textContent       = fmtGB(mem.wired_gb);
+
+  // Stacked bar
+  if (totalGB > 0) {
+    const toFlex = gb => (gb / totalGB * 100).toFixed(2);
+    document.getElementById('ms-wired').style.flex      = toFlex(mem.wired_gb || 0);
+    document.getElementById('ms-active').style.flex     = toFlex(mem.active_gb || 0);
+    document.getElementById('ms-inactive').style.flex   = toFlex(mem.inactive_gb || 0);
+    document.getElementById('ms-compressed').style.flex = toFlex(mem.compressed_gb || 0);
+  }
+
+  // Mem chart dynamic max
+  if (totalGB > 0) memChart.options.scales.y.max = totalGB;
+  push(memChart.data.datasets[0].data, mem.used_gb || null);
+  memChart.update();
+
+  // ── Disk ──
+  const disk = d.disk || {};
+  const capPct = disk.capacity ? parseFloat(disk.capacity) : 0;
+  document.getElementById('disk-used').innerHTML = `${capPct}<span class="unit">%</span>`;
+  document.getElementById('disk-sub').textContent = `${disk.used || '—'} used of ${disk.size || '—'}`;
+  document.getElementById('disk-gauge').style.width = capPct + '%';
+  document.getElementById('disk-size').textContent  = disk.size  || '—';
+  document.getElementById('disk-used-val').textContent = disk.used || '—';
+  document.getElementById('disk-avail').textContent = disk.avail || '—';
+
+  // ── Network ──
+  const net = d.network || {};
+  const ifaces = Object.keys(net);
+  const netEl = document.getElementById('net-ifaces');
+  if (ifaces.length === 0) {
+    netEl.innerHTML = '<div style="color:var(--muted);font-size:11px;">No active interfaces</div>';
+  } else {
+    netEl.innerHTML = ifaces.map(name => {
+      const s = net[name];
+      const inKbps  = s.in_kbps  || 0;
+      const outKbps = s.out_kbps || 0;
+      const fmt = kbps => kbps >= 1024
+        ? (kbps/1024).toFixed(1) + ' MB/s'
+        : kbps.toFixed(0) + ' KB/s';
+      return `<div class="net-iface">
+        <div class="net-iface-name">${name}</div>
+        <div class="net-speeds">
+          <div class="net-speed-item">
+            <div class="net-speed-label">↓ IN</div>
+            <div class="net-speed-val in">${fmt(inKbps)}</div>
+          </div>
+          <div class="net-speed-item">
+            <div class="net-speed-label">↑ OUT</div>
+            <div class="net-speed-val out">${fmt(outKbps)}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Thermals ──
+  const th = d.thermals || {};
+  document.getElementById('temp-source').textContent = th.source || '—';
+
+  const noteEl = document.getElementById('thermal-note');
+  if (th.note) {
+    noteEl.style.display = 'block';
+    noteEl.textContent = th.note;
+  } else {
+    noteEl.style.display = 'none';
+  }
+
+  const sensors = th.sensors || {};
+  const sKeys = Object.keys(sensors);
+  const grid = document.getElementById('sensor-grid');
+  if (sKeys.length === 0) {
+    grid.innerHTML = '<div style="color:var(--muted);font-size:11px;grid-column:span 2;">No sensor data available.</div>';
+  } else {
+    grid.innerHTML = sKeys.map(k => {
+      const v = sensors[k];
+      const isNum = typeof v === 'number';
+      const isMW   = isNum && k.includes('mW');
+      const isTemp = isNum && !isMW;
+
+      const color = !isNum       ? 'var(--accent2)'
+        : isMW                   ? 'var(--accent)'
+        : v > 90                 ? 'var(--danger)'
+        : v > 70                 ? 'var(--warn)'
+        :                          'var(--temp-color)';
+
+      const display = isMW
+        ? `<div class="sensor-val" style="color:${color}">${v.toFixed(0)}<span class="sunit"> mW</span></div>`
+        : isTemp
+        ? `<div class="sensor-val" style="color:${color}">${v.toFixed(1)}<span class="sunit">°C</span></div>`
+        : `<div class="sensor-val" style="color:${color};font-size:13px;">${v}</div>`;
+
+      return `<div class="sensor-item">
+        <div class="sensor-name">${k}</div>
+        ${display}
+      </div>`;
+    }).join('');
+
+    // Temp history chart — only actual temperature sensors (not mW, not strings)
+    const numericKeys = sKeys.filter(k => typeof sensors[k] === 'number' && !k.includes('mW'));
+    const tempCard = document.getElementById('temp-chart-card');
+    tempCard.style.display = 'block';
+    if (!tempChart || JSON.stringify(tempChartSensors) !== JSON.stringify(numericKeys)) {
+      tempChartSensors = numericKeys;
+      const colors = ['#fe8019','#fabd2f','#fb4934','#d3869b','#458588','#83a598','#b8bb26'];
+      const datasets = numericKeys.slice(0,6).map((k,i) => makeDataset(k, colors[i % colors.length], false));
+      if (tempChart) { tempChart.destroy(); }
+      if (datasets.length > 0) tempChart = initChart('temp-chart', datasets, 110);
+    }
+    numericKeys.slice(0,6).forEach((k,i) => {
+      if (tempChart) push(tempChart.data.datasets[i].data, sensors[k]);
+    });
+    if (tempChart) tempChart.update();
+  }
+
+  // ── Fans ──
+  const fans = th.fans || [];
+  const fanEl = document.getElementById('fan-list');
+  if (fans.length === 0) {
+    fanEl.innerHTML = '<div style="color:var(--muted);font-size:11px;">No fan data available.</div>';
+  } else {
+    fanEl.innerHTML = fans.map((f,i) => `
+      <div class="fan-item">
+        <span class="fan-icon">⌀</span>
+        <div class="fan-info">
+          <div class="fan-label">Fan ${f.id !== undefined ? f.id : i}${f.name ? ' — ' + f.name : ''}</div>
+          <div class="fan-rpm">${f.rpm.toFixed(0)}<span style="font-size:11px;color:var(--muted)"> RPM</span></div>
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+fetchMetrics();
+setInterval(fetchMetrics, 2000);
+</script>
+</body>
+</html>
