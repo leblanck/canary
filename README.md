@@ -2,7 +2,7 @@
 
 A lightweight, local-only system performance dashboard for macOS. No Electron, no npm, no cloud — just a small Python server that reads native macOS tools and serves a live-updating web UI to your browser.
 
-![Dashboard preview showing CPU, memory, thermal, fan, disk, and network panels in a dark Gruvbox theme]
+![Dashboard Demo](./canary-demo.png)
 
 ---
 
